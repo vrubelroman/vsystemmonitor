@@ -2,7 +2,6 @@ mod app;
 mod collector;
 mod config;
 mod model;
-mod navigation;
 mod theme;
 mod ui;
 

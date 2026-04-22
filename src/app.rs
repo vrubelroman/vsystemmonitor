@@ -17,14 +17,13 @@ use crate::{
     collector::{local::LocalCollector, remote::load_remote_collectors, HostCollector},
     config::AppConfig,
     model::{HostDescriptor, HostInfo, HostStatus, HostType},
-    navigation::Pager,
     ui,
 };
 
 pub struct App {
     pub config: AppConfig,
     pub hosts: Vec<HostInfo>,
-    pub pager: Pager,
+    pub selected_host_id: Option<String>,
     pub show_help: bool,
     should_quit: bool,
     result_rx: Receiver<WorkerResult>,
@@ -77,11 +76,11 @@ impl App {
             })
             .collect::<Vec<_>>();
         let hosts = sorted_hosts(&collectors, config.ssh.unreachable_to_end);
-        let pager = Pager::new(config.default_page_size);
+        let selected_host_id = hosts.first().map(|host| host.id.clone());
         let mut app = Self {
             config,
             hosts,
-            pager,
+            selected_host_id,
             show_help: false,
             should_quit: false,
             result_rx,
@@ -103,7 +102,7 @@ impl App {
 
     fn rebuild_hosts(&mut self) {
         self.hosts = sorted_hosts(&self.collectors, self.config.ssh.unreachable_to_end);
-        self.pager.clamp(self.hosts.len());
+        self.clamp_selection();
     }
 
     fn request_initial_remote_refreshes(&mut self) {
@@ -159,18 +158,79 @@ impl App {
             return;
         }
 
-        if key_matches(&self.config.keys.next_page, &code) || code == KeyCode::Right {
-            self.pager.next_page(self.hosts.len());
+        if key_matches(&self.config.keys.next_page, &code)
+            || matches!(code, KeyCode::Right | KeyCode::Down)
+        {
+            self.select_next_host();
             return;
         }
 
-        if key_matches(&self.config.keys.prev_page, &code) || code == KeyCode::Left {
-            self.pager.prev_page(self.hosts.len());
+        if key_matches(&self.config.keys.prev_page, &code)
+            || matches!(code, KeyCode::Left | KeyCode::Up)
+        {
+            self.select_prev_host();
         }
     }
 
     pub fn should_quit(&self) -> bool {
         self.should_quit
+    }
+
+    pub fn selected_host(&self) -> Option<&HostInfo> {
+        let selected_host_id = self.selected_host_id.as_deref()?;
+        self.hosts.iter().find(|host| host.id == selected_host_id)
+    }
+
+    pub fn selected_host_index(&self) -> usize {
+        let Some(selected_host_id) = self.selected_host_id.as_deref() else {
+            return 0;
+        };
+
+        self.hosts
+            .iter()
+            .position(|host| host.id == selected_host_id)
+            .unwrap_or(0)
+    }
+
+    fn select_next_host(&mut self) {
+        if self.hosts.is_empty() {
+            self.selected_host_id = None;
+            return;
+        }
+
+        let next_index = (self.selected_host_index() + 1) % self.hosts.len();
+        self.selected_host_id = Some(self.hosts[next_index].id.clone());
+    }
+
+    fn select_prev_host(&mut self) {
+        if self.hosts.is_empty() {
+            self.selected_host_id = None;
+            return;
+        }
+
+        let current_index = self.selected_host_index();
+        let prev_index = if current_index == 0 {
+            self.hosts.len() - 1
+        } else {
+            current_index - 1
+        };
+        self.selected_host_id = Some(self.hosts[prev_index].id.clone());
+    }
+
+    fn clamp_selection(&mut self) {
+        if self.hosts.is_empty() {
+            self.selected_host_id = None;
+            return;
+        }
+
+        let selected_host_id = self.selected_host_id.clone();
+        if let Some(selected_host_id) = selected_host_id {
+            if self.hosts.iter().any(|host| host.id == selected_host_id) {
+                return;
+            }
+        }
+
+        self.selected_host_id = Some(self.hosts[0].id.clone());
     }
 }
 
@@ -229,8 +289,6 @@ fn run_event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, config: App
     loop {
         app.poll_updates();
         terminal.size()?;
-        app.pager.set_page_size(compute_page_size());
-        app.pager.clamp(app.hosts.len());
 
         terminal.draw(|frame| ui::render(frame, &app))?;
 
@@ -272,10 +330,6 @@ fn key_matches(binding: &str, code: &KeyCode) -> bool {
         KeyCode::Right => binding.eq_ignore_ascii_case("right"),
         _ => false,
     }
-}
-
-fn compute_page_size() -> usize {
-    1
 }
 
 fn sorted_hosts(collectors: &[CollectorState], unreachable_to_end: bool) -> Vec<HostInfo> {

@@ -40,25 +40,23 @@ pub fn render(frame: &mut Frame, app: &App) {
 }
 
 fn render_header(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
-    let page = app.pager.current_page() + 1;
-    let total_pages = app.pager.total_pages(app.hosts.len()).max(1);
+    let selected = app.selected_host_index() + 1;
+    let total_hosts = app.hosts.len().max(1);
     let title = Line::from(vec![
         Span::styled("vsysmonitor", Style::default().fg(palette.mauve).add_modifier(Modifier::BOLD)),
         Span::raw("  "),
         Span::styled("theme:", Style::default().fg(palette.overlay)),
         Span::styled(format!(" {}", app.config.theme.as_str()), Style::default().fg(palette.text)),
         Span::raw("  "),
-        Span::styled("page:", Style::default().fg(palette.overlay)),
-        Span::styled(format!(" {page}/{total_pages}"), Style::default().fg(palette.text)),
+        Span::styled("host:", Style::default().fg(palette.overlay)),
+        Span::styled(format!(" {selected}/{total_hosts}"), Style::default().fg(palette.text)),
     ]);
 
     frame.render_widget(Paragraph::new(title).alignment(Alignment::Left), area);
 }
 
 fn render_hosts(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
-    let (start, end) = app.pager.window(app.hosts.len());
-    let visible_hosts = &app.hosts[start..end];
-    if visible_hosts.is_empty() {
+    if app.hosts.is_empty() {
         let empty = Paragraph::new("No hosts configured").style(Style::default().fg(palette.subtext));
         let block = centered_block("Hosts", app.config.show_borders, palette);
         let inner = block.inner(area);
@@ -67,14 +65,48 @@ fn render_hosts(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
         return;
     }
 
-    let columns = Layout::default()
+    let layout = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints(vec![Constraint::Ratio(1, visible_hosts.len() as u32); visible_hosts.len()])
+        .constraints([Constraint::Length(34), Constraint::Min(0)])
         .split(area);
 
-    for (host, chunk) in visible_hosts.iter().zip(columns.iter().copied()) {
-        render_host_column(frame, chunk, host, app, palette);
+    render_host_list(frame, layout[0], app, palette);
+
+    if let Some(host) = app.selected_host() {
+        render_host_column(frame, layout[1], host, app, palette);
     }
+}
+
+fn render_host_list(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
+    let block = Block::default()
+        .title("Hosts")
+        .borders(if app.config.show_borders {
+            Borders::ALL
+        } else {
+            Borders::NONE
+        })
+        .style(Style::default().bg(palette.mantle).fg(palette.text))
+        .border_style(Style::default().fg(palette.overlay));
+    frame.render_widget(block.clone(), area);
+
+    let inner = block.inner(area);
+    let visible_items = (inner.height as usize).max(4) / 4;
+    let selected_index = app.selected_host_index();
+    let start = selected_index.saturating_sub(visible_items / 2);
+    let end = (start + visible_items).min(app.hosts.len());
+    let start = end.saturating_sub(visible_items);
+
+    let mut lines = Vec::new();
+    for (index, host) in app.hosts[start..end].iter().enumerate() {
+        let actual_index = start + index;
+        let selected = actual_index == selected_index;
+        lines.extend(host_list_item_lines(host, selected, inner.width as usize, app, palette));
+    }
+
+    let widget = Paragraph::new(lines)
+        .style(Style::default().bg(palette.mantle).fg(palette.text))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(widget, inner);
 }
 
 fn render_host_column(frame: &mut Frame, area: Rect, host: &HostInfo, app: &App, palette: Palette) {
@@ -102,8 +134,8 @@ fn render_host_column(frame: &mut Frame, area: Rect, host: &HostInfo, app: &App,
     frame.render_widget(outer.clone(), area);
 
     let inner = outer.inner(area);
-    let disk_lines = host.metrics.disks.len().max(2) as u16;
-    let docker_lines = docker_widget_lines(host).max(2);
+    let disk_lines = disk_widget_height(host);
+    let docker_lines = docker_widget_lines(host);
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -111,7 +143,7 @@ fn render_host_column(frame: &mut Frame, area: Rect, host: &HostInfo, app: &App,
             Constraint::Length(3),
             Constraint::Length(disk_lines),
             Constraint::Min(docker_lines),
-            Constraint::Length(2),
+            Constraint::Length(3),
         ])
         .split(inner);
 
@@ -348,7 +380,7 @@ fn render_docker(frame: &mut Frame, area: Rect, host: &HostInfo, palette: Palett
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let hints = format!(
-        "{} / Left prev  {} / Right next  {} refresh  {} help  {} quit",
+        "{} / Up / Left prev  {} / Down / Right next  {} refresh  {} help  {} quit",
         app.config.keys.prev_page,
         app.config.keys.next_page,
         app.config.keys.refresh,
@@ -366,9 +398,10 @@ fn render_help_overlay(frame: &mut Frame, app: &App, palette: Palette) {
         Line::from(vec![
             Span::styled("Navigation", Style::default().fg(palette.mauve).add_modifier(Modifier::BOLD)),
         ]),
+        Line::from(format!("{} / Up / Left  previous host", app.config.keys.prev_page)),
         Line::from(format!(
-            "{} / Left  previous host    {} / Right  next host",
-            app.config.keys.prev_page, app.config.keys.next_page
+            "{} / Down / Right  next host",
+            app.config.keys.next_page
         )),
         Line::from(format!("{}  refresh metrics", app.config.keys.refresh)),
         Line::from(format!("{}  toggle help", app.config.keys.help)),
@@ -472,10 +505,19 @@ fn disk_mount_suffix(disk: &DiskInfo) -> String {
 
 fn docker_widget_lines(host: &HostInfo) -> u16 {
     if host.metrics.docker_error.is_some() || host.metrics.docker_containers.is_empty() {
-        2
+        3
     } else {
-        host.metrics.docker_containers.len() as u16 + 1
+        host.metrics.docker_containers.len() as u16 + 3
     }
+}
+
+fn disk_widget_height(host: &HostInfo) -> u16 {
+    let content_lines = if host.metrics.disks.is_empty() {
+        1
+    } else {
+        host.metrics.disks.len()
+    };
+    content_lines as u16 + 2
 }
 
 fn docker_header_line(
@@ -588,6 +630,120 @@ fn truncate_text(value: &str, max_chars: usize) -> String {
 fn pad_or_truncate(value: &str, width: usize) -> String {
     let value = truncate_text(value, width);
     format!("{value:<width$}")
+}
+
+fn host_list_item_lines(
+    host: &HostInfo,
+    selected: bool,
+    width: usize,
+    app: &App,
+    palette: Palette,
+) -> [Line<'static>; 4] {
+    let border_color = if selected { palette.green } else { palette.overlay };
+    let border_style = Style::default().fg(border_color).bg(palette.mantle);
+    let name_style = Style::default()
+        .fg(host_list_name_color(host, app, palette))
+        .bg(palette.mantle)
+        .add_modifier(Modifier::BOLD);
+    let detail_style = Style::default()
+        .fg(host_list_detail_color(host, palette))
+        .bg(palette.mantle);
+
+    let inner_width = width.saturating_sub(2);
+    let name = truncate_text(&host.display_name, 28);
+    let summary = match host.status {
+        HostStatus::Loading => "waiting for metrics...".to_string(),
+        HostStatus::Unreachable | HostStatus::Error => {
+            fallback_text(host.last_error.as_deref().unwrap_or(host_status_label(host.status)), "-")
+        }
+        HostStatus::Online => {
+            let temp = host
+                .metrics
+                .cpu_temperature_celsius
+                .map(|value| format!(" {}C", value.round() as i64))
+                .unwrap_or_default();
+            format!(
+                "CPU {:>4.1}%{}  RAM {:>4.1}%",
+                host.metrics.cpu_usage_percent,
+                temp,
+                host.metrics.memory_usage_percent
+            )
+        }
+    };
+    let (top_left, top_right, bottom_left, bottom_right, horizontal, vertical) = if selected {
+        ('┏', '┓', '┗', '┛', '━', '┃')
+    } else {
+        ('┌', '┐', '└', '┘', '─', '│')
+    };
+    let top_border = format!("{top_left}{}{top_right}", horizontal.to_string().repeat(inner_width));
+    let bottom_border =
+        format!("{bottom_left}{}{bottom_right}", horizontal.to_string().repeat(inner_width));
+
+    [
+        Line::from(Span::styled(top_border, border_style)),
+        Line::from(vec![
+            Span::styled(vertical.to_string(), border_style),
+            Span::styled(pad_or_truncate(&format!(" {name}"), inner_width), name_style),
+            Span::styled(vertical.to_string(), border_style),
+        ]),
+        Line::from(vec![
+            Span::styled(vertical.to_string(), border_style),
+            Span::styled(
+                pad_or_truncate(
+                    &format!(" {}", truncate_text(&summary, inner_width.saturating_sub(1))),
+                    inner_width,
+                ),
+                detail_style,
+            ),
+            Span::styled(vertical.to_string(), border_style),
+        ]),
+        Line::from(Span::styled(bottom_border, border_style)),
+    ]
+}
+
+fn host_list_name_color(host: &HostInfo, app: &App, palette: Palette) -> ratatui::style::Color {
+    match host.status {
+        HostStatus::Unreachable | HostStatus::Error => return palette.red,
+        HostStatus::Loading => return palette.yellow,
+        HostStatus::Online => {}
+    }
+
+    if host_has_problem_docker(host) {
+        return palette.red;
+    }
+
+    if let Some(temp) = host.metrics.cpu_temperature_celsius {
+        return palette.severity_color(
+            temp,
+            app.config.cpu_temp_warning_threshold,
+            app.config.cpu_temp_critical_threshold,
+        );
+    }
+
+    palette.green
+}
+
+fn host_list_detail_color(host: &HostInfo, palette: Palette) -> ratatui::style::Color {
+    match host.status {
+        HostStatus::Unreachable | HostStatus::Error => palette.red,
+        HostStatus::Loading => palette.yellow,
+        HostStatus::Online => {
+            if host_has_problem_docker(host) {
+                palette.red
+            } else {
+                palette.subtext
+            }
+        }
+    }
+}
+
+fn host_has_problem_docker(host: &HostInfo) -> bool {
+    host.metrics.docker_error.is_some()
+        || host
+            .metrics
+            .docker_containers
+            .iter()
+            .any(docker_container_is_problem)
 }
 
 #[cfg(test)]
