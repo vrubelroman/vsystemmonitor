@@ -49,6 +49,8 @@ pub struct SshConfig {
     pub unreachable_to_end: bool,
     pub prefer_ssh_over_ping_check: bool,
     pub max_parallel_hosts: usize,
+    pub enable_multiplexing: bool,
+    pub control_persist_ms: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -69,7 +71,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             local_refresh_interval_ms: 2_000,
-            remote_refresh_interval_ms: 15_000,
+            remote_refresh_interval_ms: 5_000,
             theme: ThemeName::CatppuccinMocha,
             show_borders: true,
             compact_mode: false,
@@ -114,6 +116,8 @@ impl Default for SshConfig {
             unreachable_to_end: true,
             prefer_ssh_over_ping_check: true,
             max_parallel_hosts: 8,
+            enable_multiplexing: true,
+            control_persist_ms: 30_000,
         }
     }
 }
@@ -189,6 +193,8 @@ struct RawSshConfig {
     unreachable_to_end: Option<bool>,
     prefer_ssh_over_ping_check: Option<bool>,
     max_parallel_hosts: Option<usize>,
+    enable_multiplexing: Option<bool>,
+    control_persist_ms: Option<u64>,
 }
 
 impl RawAppConfig {
@@ -244,6 +250,10 @@ impl RawAppConfig {
                 ssh.prefer_ssh_over_ping_check.unwrap_or(defaults.ssh.prefer_ssh_over_ping_check);
             defaults.ssh.max_parallel_hosts =
                 ssh.max_parallel_hosts.unwrap_or(defaults.ssh.max_parallel_hosts).max(1);
+            defaults.ssh.enable_multiplexing =
+                ssh.enable_multiplexing.unwrap_or(defaults.ssh.enable_multiplexing);
+            defaults.ssh.control_persist_ms =
+                ssh.control_persist_ms.unwrap_or(defaults.ssh.control_persist_ms);
         }
 
         defaults

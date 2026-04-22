@@ -44,6 +44,9 @@ pub struct RemoteCollector {
     ssh_connect_timeout_ms: u64,
     host_ping_timeout_ms: u64,
     prefer_ssh_over_ping_check: bool,
+    ssh_control_path: PathBuf,
+    ssh_enable_multiplexing: bool,
+    ssh_control_persist_ms: u64,
     previous_network_sample: Option<NetworkSample>,
 }
 
@@ -62,6 +65,9 @@ impl RemoteCollector {
             ssh_connect_timeout_ms: config.ssh.ssh_connect_timeout_ms,
             host_ping_timeout_ms: config.ssh.host_ping_timeout_ms,
             prefer_ssh_over_ping_check: config.ssh.prefer_ssh_over_ping_check,
+            ssh_control_path: multiplex_control_path(&host.alias),
+            ssh_enable_multiplexing: config.ssh.enable_multiplexing,
+            ssh_control_persist_ms: config.ssh.control_persist_ms,
             previous_network_sample: None,
         }
     }
@@ -85,18 +91,8 @@ impl RemoteCollector {
             self.check_ping()?;
         }
 
-        let mut child = Command::new("ssh")
-            .arg("-F")
-            .arg(&self.ssh_config_path)
-            .arg("-o")
-            .arg("BatchMode=yes")
-            .arg("-o")
-            .arg("NumberOfPasswordPrompts=0")
-            .arg("-o")
-            .arg(format!(
-                "ConnectTimeout={}",
-                (self.ssh_connect_timeout_ms / 1_000).max(1)
-            ))
+        let mut command = self.ssh_command();
+        let mut child = command
             .arg(&self.ssh_alias)
             .arg("sh")
             .arg("-s")
@@ -173,6 +169,37 @@ impl RemoteCollector {
             last_updated: Some(SystemTime::now()),
             last_error,
         }
+    }
+
+    fn ssh_command(&self) -> Command {
+        let mut command = Command::new("ssh");
+        command
+            .arg("-F")
+            .arg(&self.ssh_config_path)
+            .arg("-o")
+            .arg("BatchMode=yes")
+            .arg("-o")
+            .arg("NumberOfPasswordPrompts=0")
+            .arg("-o")
+            .arg(format!(
+                "ConnectTimeout={}",
+                (self.ssh_connect_timeout_ms / 1_000).max(1)
+            ));
+
+        if self.ssh_enable_multiplexing {
+            if let Some(parent) = self.ssh_control_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            command
+                .arg("-o")
+                .arg("ControlMaster=auto")
+                .arg("-o")
+                .arg(format!("ControlPersist={}s", (self.ssh_control_persist_ms / 1_000).max(1)))
+                .arg("-o")
+                .arg(format!("ControlPath={}", self.ssh_control_path.display()));
+        }
+
+        command
     }
 }
 
@@ -308,6 +335,13 @@ fn expand_home_path(path: &str) -> Result<PathBuf> {
     }
 
     Ok(PathBuf::from(path))
+}
+
+fn multiplex_control_path(alias: &str) -> PathBuf {
+    let base_dir = env::var("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| env::temp_dir());
+    base_dir.join("vsysmonitor-ssh").join(format!("{alias}-%C"))
 }
 
 fn remote_metrics_script() -> &'static str {

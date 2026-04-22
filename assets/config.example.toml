@@ -1,5 +1,5 @@
 local_refresh_interval_ms = 2000
-remote_refresh_interval_ms = 15000
+remote_refresh_interval_ms = 5000
 theme = "catppuccin_mocha"
 show_borders = true
 compact_mode = false
@@ -34,3 +34,5 @@ host_ping_timeout_ms = 1000
 unreachable_to_end = true
 prefer_ssh_over_ping_check = true
 max_parallel_hosts = 8
+enable_multiplexing = true
+control_persist_ms = 30000
