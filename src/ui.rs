@@ -386,9 +386,50 @@ fn disk_label(disk: &DiskInfo) -> String {
 
 fn disk_mount_suffix(disk: &DiskInfo) -> String {
     if disk.mount_point.is_empty() {
-        String::new()
-    } else {
-        format!("  {}", disk.mount_point)
+        return String::new();
+    }
+
+    let mountpoints = disk
+        .mount_point
+        .split(',')
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+
+    if mountpoints.is_empty() {
+        return String::new();
+    }
+
+    if mountpoints.len() == 1 {
+        return format!("  {}", mountpoints[0]);
+    }
+
+    if mountpoints.len() == 2 {
+        return format!("  {},{}", mountpoints[0], mountpoints[1]);
+    }
+
+    if let Some(root_mount) = mountpoints.iter().find(|mountpoint| **mountpoint == "/") {
+        return format!("  {} +{}", root_mount, mountpoints.len() - 1);
+    }
+
+    format!("  {},{} +{}", mountpoints[0], mountpoints[1], mountpoints.len() - 2)
+}
+
+#[cfg(test)]
+mod ui_tests {
+    use super::disk_mount_suffix;
+    use crate::model::DiskInfo;
+
+    #[test]
+    fn compresses_many_mountpoints_in_suffix() {
+        let disk = DiskInfo {
+            name: "nvme1n1".to_string(),
+            mount_point: "/boot,/,/tmp,/nix/store".to_string(),
+            used_bytes: 0,
+            total_bytes: 1,
+            usage_percent: 0.0,
+        };
+
+        assert_eq!(disk_mount_suffix(&disk), "  / +3");
     }
 }
 

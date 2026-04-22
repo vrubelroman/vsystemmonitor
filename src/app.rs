@@ -14,7 +14,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use crate::{
     collector::{local::LocalCollector, remote::load_remote_collectors, HostCollector},
     config::AppConfig,
-    model::{HostInfo, HostStatus, HostType},
+    model::{HostDescriptor, HostInfo, HostStatus, HostType},
     navigation::Pager,
     ui,
 };
@@ -25,23 +25,40 @@ pub struct App {
     pub pager: Pager,
     pub show_help: bool,
     should_quit: bool,
-    collectors: Vec<Box<dyn HostCollector>>,
+    collectors: Vec<CollectorState>,
+}
+
+struct CollectorState {
+    descriptor: HostDescriptor,
+    collector: Box<dyn HostCollector>,
+    host: HostInfo,
+    last_refresh_at: Option<Instant>,
 }
 
 impl App {
     pub fn new(config: AppConfig) -> Self {
-        let mut collectors: Vec<Box<dyn HostCollector>> = vec![Box::new(LocalCollector::new(&config))];
+        let mut collector_impls: Vec<Box<dyn HostCollector>> = vec![Box::new(LocalCollector::new(&config))];
         if let Ok(remote_collectors) = load_remote_collectors(&config) {
-            collectors.extend(
+            collector_impls.extend(
                 remote_collectors
                     .into_iter()
                     .map(|collector| Box::new(collector) as Box<dyn HostCollector>),
             );
         }
-        let hosts = collectors
-            .iter()
-            .map(|collector| HostInfo::loading(collector.descriptor()))
-            .collect();
+        let collectors = collector_impls
+            .into_iter()
+            .map(|collector| {
+                let descriptor = collector.descriptor();
+                let host = HostInfo::loading(descriptor.clone());
+                CollectorState {
+                    descriptor,
+                    collector,
+                    host,
+                    last_refresh_at: None,
+                }
+            })
+            .collect::<Vec<_>>();
+        let hosts = collectors.iter().map(|state| state.host.clone()).collect();
         let pager = Pager::new(config.default_page_size);
 
         Self {
@@ -54,13 +71,19 @@ impl App {
         }
     }
 
-    pub fn refresh(&mut self) {
-        self.hosts = self
-            .collectors
-            .iter_mut()
-            .map(|collector| {
-                let fallback = HostInfo::loading(collector.descriptor());
-                match collector.collect() {
+    pub fn refresh_all(&mut self) {
+        self.refresh_due(true);
+    }
+
+    pub fn refresh_due(&mut self, force: bool) {
+        let now = Instant::now();
+        for state in &mut self.collectors {
+            if !force && !state.is_due(now, &self.config) {
+                continue;
+            }
+
+            let fallback = HostInfo::loading(state.descriptor.clone());
+            state.host = match state.collector.collect() {
                     Ok(host) => host,
                     Err(error) => {
                         let mut failed = fallback;
@@ -68,9 +91,15 @@ impl App {
                         failed.last_error = Some(error.to_string());
                         failed
                     }
-                }
-            })
-            .collect();
+                };
+            state.last_refresh_at = Some(now);
+        }
+
+        self.rebuild_hosts();
+    }
+
+    fn rebuild_hosts(&mut self) {
+        self.hosts = self.collectors.iter().map(|state| state.host.clone()).collect();
         sort_hosts(&mut self.hosts, self.config.ssh.unreachable_to_end);
         self.pager.clamp(self.hosts.len());
     }
@@ -87,7 +116,7 @@ impl App {
         }
 
         if key_matches(&self.config.keys.refresh, &code) {
-            self.refresh();
+            self.refresh_all();
             return;
         }
 
@@ -106,6 +135,19 @@ impl App {
     }
 }
 
+impl CollectorState {
+    fn is_due(&self, now: Instant, config: &AppConfig) -> bool {
+        let interval = match self.descriptor.host_type {
+            HostType::Local => Duration::from_millis(config.local_refresh_interval_ms),
+            HostType::Remote => Duration::from_millis(config.remote_refresh_interval_ms),
+        };
+
+        self.last_refresh_at
+            .map(|last_refresh_at| now.duration_since(last_refresh_at) >= interval)
+            .unwrap_or(true)
+    }
+}
+
 pub fn run(config: AppConfig) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -119,9 +161,9 @@ pub fn run(config: AppConfig) -> Result<()> {
 
 fn run_event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, config: AppConfig) -> Result<()> {
     let mut app = App::new(config);
-    app.refresh();
+    app.refresh_all();
 
-    let tick_rate = Duration::from_millis(app.config.refresh_interval_ms);
+    let tick_rate = Duration::from_millis(250);
     let mut last_tick = Instant::now();
 
     loop {
@@ -145,7 +187,7 @@ fn run_event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, config: App
         }
 
         if last_tick.elapsed() >= tick_rate {
-            app.refresh();
+            app.refresh_due(false);
             last_tick = Instant::now();
         }
     }

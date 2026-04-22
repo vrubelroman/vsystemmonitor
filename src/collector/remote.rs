@@ -1,9 +1,11 @@
 use std::{
     collections::HashSet,
     env, fs,
-    path::{Path, PathBuf},
     io::Write,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
+    time::Duration,
     time::SystemTime,
 };
 
@@ -59,6 +61,20 @@ impl RemoteCollector {
     }
 
     fn collect_remote_metrics(&self) -> std::result::Result<MetricsSnapshot, RemoteCollectError> {
+        for attempt in 0..=1 {
+            match self.collect_remote_metrics_once() {
+                Ok(metrics) => return Ok(metrics),
+                Err(error) if attempt == 0 && error.is_retryable() => {
+                    thread::sleep(Duration::from_millis(300));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(RemoteCollectError::Error("unexpected remote retry state".to_string()))
+    }
+
+    fn collect_remote_metrics_once(&self) -> std::result::Result<MetricsSnapshot, RemoteCollectError> {
         if !self.prefer_ssh_over_ping_check {
             self.check_ping()?;
         }
@@ -173,6 +189,12 @@ struct SshHostEntry {
 enum RemoteCollectError {
     Unreachable(String),
     Error(String),
+}
+
+impl RemoteCollectError {
+    fn is_retryable(&self) -> bool {
+        matches!(self, RemoteCollectError::Unreachable(_))
+    }
 }
 
 fn parse_ssh_config(path: &Path) -> Result<Vec<SshHostEntry>> {
@@ -333,6 +355,9 @@ fn classify_ssh_failure(stderr: &str) -> RemoteCollectError {
         || lowered.contains("could not resolve hostname")
         || lowered.contains("connection closed")
         || lowered.contains("connection reset")
+        || lowered.contains("kex_exchange_identification")
+        || lowered.contains("banner exchange")
+        || lowered.contains("operation timed out")
     {
         return RemoteCollectError::Unreachable(compact_remote_error(stderr, "ssh timeout"));
     }

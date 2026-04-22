@@ -9,7 +9,8 @@ use serde::Deserialize;
 
 #[derive(Clone, Debug)]
 pub struct AppConfig {
-    pub refresh_interval_ms: u64,
+    pub local_refresh_interval_ms: u64,
+    pub remote_refresh_interval_ms: u64,
     pub theme: ThemeName,
     pub show_borders: bool,
     pub compact_mode: bool,
@@ -67,7 +68,8 @@ impl ThemeName {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            refresh_interval_ms: 5_000,
+            local_refresh_interval_ms: 2_000,
+            remote_refresh_interval_ms: 15_000,
             theme: ThemeName::CatppuccinMocha,
             show_borders: true,
             compact_mode: false,
@@ -81,7 +83,7 @@ impl Default for AppConfig {
             ram_critical_threshold: 85.0,
             disk_warning_threshold: 70.0,
             disk_critical_threshold: 90.0,
-            stale_data_timeout_ms: 5_000,
+            stale_data_timeout_ms: 20_000,
             show_all_disks: true,
             disk_include_mountpoints: vec!["/".to_string()],
             disk_exclude_mountpoints: vec!["/boot".to_string()],
@@ -107,7 +109,7 @@ impl Default for SshConfig {
     fn default() -> Self {
         Self {
             config_path: "~/.ssh/config".to_string(),
-            ssh_connect_timeout_ms: 2_500,
+            ssh_connect_timeout_ms: 5_000,
             host_ping_timeout_ms: 1_000,
             unreachable_to_end: true,
             prefer_ssh_over_ping_check: true,
@@ -147,6 +149,8 @@ impl AppConfig {
 #[derive(Debug, Default, Deserialize)]
 struct RawAppConfig {
     refresh_interval_ms: Option<u64>,
+    local_refresh_interval_ms: Option<u64>,
+    remote_refresh_interval_ms: Option<u64>,
     theme: Option<ThemeName>,
     show_borders: Option<bool>,
     compact_mode: Option<bool>,
@@ -189,7 +193,15 @@ struct RawSshConfig {
 
 impl RawAppConfig {
     fn merge(self, mut defaults: AppConfig) -> AppConfig {
-        defaults.refresh_interval_ms = self.refresh_interval_ms.unwrap_or(defaults.refresh_interval_ms);
+        let legacy_refresh_interval_ms = self.refresh_interval_ms;
+        defaults.local_refresh_interval_ms = self
+            .local_refresh_interval_ms
+            .or(legacy_refresh_interval_ms)
+            .unwrap_or(defaults.local_refresh_interval_ms);
+        defaults.remote_refresh_interval_ms = self
+            .remote_refresh_interval_ms
+            .or(legacy_refresh_interval_ms)
+            .unwrap_or(defaults.remote_refresh_interval_ms);
         defaults.theme = self.theme.unwrap_or(defaults.theme);
         defaults.show_borders = self.show_borders.unwrap_or(defaults.show_borders);
         defaults.compact_mode = self.compact_mode.unwrap_or(defaults.compact_mode);

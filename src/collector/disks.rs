@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::model::DiskInfo;
 
@@ -98,8 +98,83 @@ struct LsblkDevice {
     name: String,
     #[serde(rename = "type")]
     device_type: String,
+    #[serde(deserialize_with = "deserialize_u64_from_number_or_string")]
     size: u64,
+    #[serde(default, deserialize_with = "deserialize_option_u64_from_number_or_string")]
     fsused: Option<u64>,
     mountpoints: Option<Vec<Option<String>>>,
     children: Option<Vec<LsblkDevice>>,
+}
+
+fn deserialize_u64_from_number_or_string<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum U64Repr {
+        Number(u64),
+        String(String),
+    }
+
+    match U64Repr::deserialize(deserializer)? {
+        U64Repr::Number(value) => Ok(value),
+        U64Repr::String(value) => value.parse::<u64>().map_err(serde::de::Error::custom),
+    }
+}
+
+fn deserialize_option_u64_from_number_or_string<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OptionalU64Repr {
+        Number(u64),
+        String(String),
+        Null,
+    }
+
+    match OptionalU64Repr::deserialize(deserializer)? {
+        OptionalU64Repr::Number(value) => Ok(Some(value)),
+        OptionalU64Repr::String(value) => value
+            .parse::<u64>()
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+        OptionalU64Repr::Null => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_physical_disks_json;
+
+    #[test]
+    fn parses_lsblk_when_fsused_is_string() {
+        let payload = r#"{
+            "blockdevices": [
+                {
+                    "name": "vda",
+                    "type": "disk",
+                    "size": 32212254720,
+                    "fsused": null,
+                    "mountpoints": [null],
+                    "children": [
+                        {
+                            "name": "vda2",
+                            "type": "part",
+                            "size": 32210140672,
+                            "fsused": "10872975360",
+                            "mountpoints": ["/"]
+                        }
+                    ]
+                }
+            ]
+        }"#;
+
+        let disks = parse_physical_disks_json(payload).unwrap();
+        assert_eq!(disks.len(), 1);
+        assert_eq!(disks[0].name, "vda");
+        assert_eq!(disks[0].used_bytes, 10_872_975_360);
+    }
 }
