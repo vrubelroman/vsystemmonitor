@@ -48,14 +48,16 @@ cargo run --release
 Build and run directly from the flake:
 
 ```bash
-nix run github:vrubelroman/vbotssh
+nix run github:vrubelroman/vbotssh?ref=v0.1.1
 ```
 
 Install into the current profile:
 
 ```bash
-nix profile install github:vrubelroman/vbotssh
+nix profile install github:vrubelroman/vbotssh?ref=v0.1.1
 ```
+
+`nix profile install` installs `vbotssh` into the current user's Nix profile. It does not edit `configuration.nix`, does not rebuild NixOS, and does not make the package a declarative system package.
 
 ### Debian / Ubuntu
 
